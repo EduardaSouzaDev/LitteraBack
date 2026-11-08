@@ -1,0 +1,6 @@
+__pycache__/
+chroma_db/
+chroma_dbs/
+test_*.py
+.venv/
+data/

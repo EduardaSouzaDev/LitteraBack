@@ -1,28 +1,83 @@
-# StanAI
+# Littera
+
+Back-end do **Littera**: um pipeline de **RAG** (Retrieval-Augmented Generation) que roda 100% local. Ele indexa um conteúdo em um banco vetorial (Chroma), busca os trechos mais relevantes para cada pergunta e usa um LLM rodando no Ollama para gerar a resposta em português.
 
 ---
 
 ## Visão geral do fluxo
 
-1. **Ingestão** (`ingest.py`) — define a URL base da wiki, baixa conteúdo, cria chunks e persiste vetores em `chroma_dbs/<hash>/` (um diretório por wiki normalizada).
-2. **Consulta** — `chat.py` (CLI) ou `api.py` (FastAPI): busca trechos semelhantes, monta contexto e o LLM gera a resposta em português.
+1. **Ingestão** — lê o conteúdo de entrada, divide em *chunks*, gera os *embeddings* e persiste os vetores em `chroma_dbs/<hash>/` (um diretório por fonte normalizada).
+2. **Consulta** — via `chat.py` (CLI) ou `api.py` (FastAPI): busca os trechos semelhantes, monta o contexto e o LLM gera a resposta em português.
+
+```
+Documento ──► chunking ──► embeddings ──► Chroma (chroma_dbs/<hash>/)
+                                               │
+Pergunta ──► embeddings ──► retrieval ◄────────┘
+                               │
+                               ▼
+                    contexto + prompt ──► LLM (Ollama) ──► resposta
+```
+
+---
+
+## Estrutura do projeto
+
+```
+LitteraBack/
+├── api.py               # API REST (FastAPI)
+├── api_schemas.py       # Schemas de request/response da API
+├── chat.py              # Interface de linha de comando (CLI)
+├── meu_documento.txt    # Documento de exemplo
+├── requirements.txt     # Dependências Python
+├── data/                # Dados locais (índices Chroma e textos)
+└── rag/
+    ├── entrada.py       # Entrada/leitura do conteúdo
+    ├── chunking.py      # Divisão do texto em chunks
+    ├── embeddings.py    # Geração de embeddings
+    ├── retrieval.py     # Busca dos trechos mais relevantes
+    ├── llm.py           # Comunicação com o LLM (Ollama)
+    ├── llm_json.py      # Respostas estruturadas (JSON) do LLM
+    ├── guidelines.py    # Diretrizes/regras aplicadas nas respostas
+    ├── analise.py       # Análise do conteúdo
+    ├── suggestion.py    # Geração de sugestões
+    ├── schemas.py       # Modelos de dados do pipeline
+    └── pipeline.py      # Orquestra o fluxo ponta a ponta
+```
 
 ---
 
 ## Pré-requisitos
 
-| Caminho    | O que você precisa                                                                                             |
-| ---------- | -------------------------------------------------------------------------------------------------------------- |
-| **Local**  | Python 3.12+, [Ollama](https://ollama.com/download), espaço em disco (PyTorch + modelo de embedding + Chroma). |
-| **Docker** | [Docker](https://docs.docker.com/get-docker/) e Docker Compose v2.                                             |
-
-Primeira execução pode demorar: download do modelo de embeddings (Hugging Face) e, no Ollama, do modelo de chat (ex.: `qwen2:7b`).
+| Requisito | Detalhes |
+| --- | --- |
+| **Python** | 3.12 ou superior |
+| **Ollama** | [Download](https://ollama.com/download) — executa o modelo de chat localmente |
+| **Espaço em disco** | PyTorch + modelo de embedding + Chroma ocupam alguns GB |
 
 ---
 
 ## Tutorial: uso local
 
-### 1. Clonar e instalar dependências
+### 1. Clonar o repositório e criar o ambiente virtual
+
+```bash
+git clone <URL_DO_REPOSITORIO>
+cd LitteraBack
+
+python -m venv .venv
+```
+
+Ativar o ambiente:
+
+```bash
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
+
+# Linux / macOS
+source .venv/bin/activate
+```
+
+### 2. Instalar as dependências
 
 Na pasta do repositório:
 
@@ -30,126 +85,62 @@ Na pasta do repositório:
 pip install -r requirements.txt
 ```
 
-### 2. Instalar o modelo de chat no Ollama
+### 3. Instalar o modelo de chat no Ollama
 
 ```bash
 ollama pull qwen2:7b
 ```
 
-(Outro modelo: defina a variável `OLLAMA_MODEL` e faça o `pull` correspondente.)
-
-### 3. Configurar a wiki na ingestão
-
-Defina a URL base da wiki (ex.: `https://nomedawiki.fandom.com`): em `ingest.py`, altere `fandom_url` (por padrão vem de `DEFAULT_WIKI_BASE_URL` em `rag/wiki_paths.py`, onde você também pode mudar o default do projeto).
-
-### 4. Rodar a ingestão
+Para usar outro modelo, defina a variável `OLLAMA_MODEL` e faça o `pull` correspondente:
 
 ```bash
-python ingest.py
+# Exemplo (Windows PowerShell)
+$env:OLLAMA_MODEL = "llama3.1:8b"
+ollama pull llama3.1:8b
+
+# Exemplo (Linux / macOS)
+export OLLAMA_MODEL="llama3.1:8b"
+ollama pull llama3.1:8b
 ```
 
-- Executa **uma vez** (ou quando quiser reindexar).
-- Pode ser **muito lento** em wikis grandes; para testes, prefira wikis pequenas.
-- O índice fica em `chroma_dbs/<hash>/`. O legado `./chroma_db` ainda é suportado pela API se existir.
+### 4. Rodar o pipeline (CLI)
 
-### 5. Conversar
-
-**CLI interativa** (usa `STANAI_WIKI_URL` ou a wiki padrão do código):
+Com o Ollama em execução:
 
 ```bash
-set STANAI_WIKI_URL=https://sua-wiki.fandom.com
-python chat.py
+python chat.py meu_documento.txt
 ```
 
-No PowerShell: `$env:STANAI_WIKI_URL="https://..."` antes de `python chat.py`.
+Na primeira execução o documento é indexado; nas seguintes o índice existente é reaproveitado e você já pode fazer perguntas.
 
-**API HTTP** (em outro terminal):
+- O índice fica em `chroma_dbs/<hash>/`.
+- O legado `./chroma_db` ainda é suportado pela API, caso exista.
+
+### 5. Rodar a API (FastAPI)
 
 ```bash
-uvicorn api:app --reload --host 0.0.0.0 --port 8000
+uvicorn api:app --reload
 ```
 
-- Documentação interativa: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- Saúde: `GET http://127.0.0.1:8000/health`
+> Se o `uvicorn` não estiver no `requirements.txt`, instale com `pip install uvicorn`.
 
-Exemplo de pergunta via `POST /chat`:
+Com a API no ar, a documentação interativa (Swagger) fica disponível em:
 
-```bash
-curl -s -X POST "http://127.0.0.1:8000/chat" ^
-  -H "Content-Type: application/json" ^
-  -d "{\"wiki_url\": \"https://sua-wiki.fandom.com\", \"message\": \"Quem é o protagonista?\"}"
-```
-
-(No bash/Linux, use `\` em vez de `^` para quebra de linha ou envie o JSON em uma linha só.)
-
-Corpo esperado: `wiki_url` (URL base da wiki) e `message` (pergunta). A resposta inclui `answer`, `sources` (título/seção dos trechos) e `used_legacy_vector_store` se tiver caído no índice antigo.
+- http://localhost:8000/docs
 
 ---
 
-## Tutorial: uso com Docker
+## Configuração
 
-### 1. Subir Ollama e a API
-
-Na raiz do repositório:
-
-```bash
-docker compose up --build
-```
-
-- **Ollama** fica em `http://localhost:11434`.
-- **API** em `http://localhost:8000`.
-
-### 2. Baixar o modelo de chat dentro do Ollama
-
-Na primeira vez, em **outro** terminal:
-
-```bash
-docker compose exec ollama ollama pull qwen2:7b
-```
-
-Aguarde o pull terminar antes de testar o chat, senão as respostas falham.
-
-### 3. Ingestão dentro do container
-
-Ajuste a wiki em `ingest.py` (ou `rag/wiki_paths.py`) como no fluxo local. Depois execute **uma task** com o mesmo código e volumes do Compose:
-
-```bash
-docker compose run --rm --no-deps api python ingest.py
-```
-
-`--no-deps` evita subir o Ollama só para ingestão (ela usa embeddings locais e HTTP para a Fandom). Os dados do Chroma vão para o volume nomeado `chroma_dbs` e persistem entre reinícios.
-
-### 4. Testar a API
-
-Mesmos endpoints que no modo local (`/docs`, `/health`, `POST /chat`).
-
-### Variáveis úteis (Docker / local)
-
-| Variável          | Descrição                 | Padrão                                                                  |
-| ----------------- | ------------------------- | ----------------------------------------------------------------------- |
-| `OLLAMA_BASE_URL` | URL do servidor Ollama    | `http://127.0.0.1:11434` (no Compose já aponta para o serviço `ollama`) |
-| `OLLAMA_MODEL`    | Nome do modelo Ollama     | `qwen2:7b`                                                              |
-| `STANAI_WIKI_URL` | Wiki usada pelo `chat.py` | Valor em `rag/wiki_paths.py`                                            |
+| Variável | Descrição | Padrão |
+| --- | --- | --- |
+| `OLLAMA_MODEL` | Modelo de chat usado pelo Ollama | `qwen2:7b` |
 
 ---
 
-## Dicas
+## Solução de problemas
 
-- Para estimar tamanho da wiki antes da ingestão, você pode usar `teste.py` (o output ajuda a ver quantidade de páginas).
-- Documentação da API gerada pelo FastAPI em `/docs` é a referência mais fiel aos campos e exemplos.
-
----
-
-## Melhorias planejadas
-
-- Suporte a imagens da wiki
-- Otimização geral (ingestão e tempo de resposta)
-- Estrutura de ingestão em JSON (talvez)
-- Modelo de embedding mais leve ou cache agressivo
-
----
-
-## Limitações
-
-- Respostas dependem do que estiver na wiki e da qualidade do texto extraído.
-- Termos muito nichados podem falhar na recuperação ou no modelo.
+- **Erro de conexão com o Ollama** — confirme que o Ollama está rodando (`ollama serve`) e que o modelo foi baixado (`ollama list`).
+- **Respostas lentas** — modelos de 7B+ em CPU são lentos; use uma GPU ou um modelo menor.
+- **Índice desatualizado** — apague o diretório correspondente em `chroma_dbs/<hash>/` para forçar uma nova ingestão.
+- **Erro ao instalar PyTorch** — verifique se você está usando Python 3.12+ e se há espaço em disco suficiente.
